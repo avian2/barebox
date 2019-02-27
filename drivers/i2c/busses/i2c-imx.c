@@ -168,7 +168,6 @@ struct fsl_i2c_struct {
 	struct clk		*clk;
 	struct i2c_adapter	adapter;
 	unsigned int 		disable_delay;
-	int			stopped;
 	unsigned int		ifdr;	/* FSL_I2C_IFDR */
 	unsigned int		dfsrr;  /* FSL_I2C_DFSRR */
 	struct i2c_bus_recovery_info rinfo;
@@ -322,8 +321,6 @@ static int i2c_fsl_start(struct i2c_adapter *adapter)
 		return -EAGAIN;
 	}
 
-	i2c_fsl->stopped = 0;
-
 	temp |= I2CR_MTX | I2CR_TXAK;
 	fsl_i2c_write_reg(temp, i2c_fsl, FSL_I2C_I2CR);
 
@@ -335,24 +332,20 @@ static void i2c_fsl_stop(struct i2c_adapter *adapter)
 	struct fsl_i2c_struct *i2c_fsl = to_fsl_i2c_struct(adapter);
 	unsigned int temp = 0;
 
-	if (!i2c_fsl->stopped) {
-		/* Stop I2C transaction */
-		temp = fsl_i2c_read_reg(i2c_fsl, FSL_I2C_I2CR);
-		temp &= ~(I2CR_MSTA | I2CR_MTX);
-		fsl_i2c_write_reg(temp, i2c_fsl, FSL_I2C_I2CR);
-		/* wait for the stop condition to be send, otherwise the i2c
-		 * controller is disabled before the STOP is sent completely */
-		i2c_fsl->stopped = i2c_fsl_bus_busy(adapter, 0) ? 0 : 1;
-	}
+	/* Stop I2C transaction */
+	temp = fsl_i2c_read_reg(i2c_fsl, FSL_I2C_I2CR);
+	if (!(temp & I2CR_MSTA))
+		return;
 
-	if (!i2c_fsl->stopped) {
-		i2c_fsl_bus_busy(adapter, 0);
-		i2c_fsl->stopped = 1;
-	}
-
-	/* Disable I2C controller, and force our state to stopped */
-	temp = i2c_fsl->hwdata->i2cr_ien_opcode ^ I2CR_IEN,
+	temp &= ~(I2CR_MSTA | I2CR_MTX);
 	fsl_i2c_write_reg(temp, i2c_fsl, FSL_I2C_I2CR);
+	/* wait for the stop condition to be send, otherwise the i2c
+	 * controller is disabled before the STOP is sent completely */
+
+	/* adding this delay helps on low bitrates */
+	udelay(i2c_fsl->disable_delay);
+
+	i2c_fsl_bus_busy(adapter, 0);
 }
 
 #ifdef CONFIG_PPC
@@ -462,45 +455,43 @@ static void i2c_fsl_set_clk(struct fsl_i2c_struct *i2c_fsl,
 }
 #endif
 
-static int i2c_fsl_write(struct i2c_adapter *adapter, struct i2c_msg *msgs)
+static int i2c_fsl_send(struct i2c_adapter *adapter, uint8_t data)
 {
 	struct fsl_i2c_struct *i2c_fsl = to_fsl_i2c_struct(adapter);
+	int result;
+
+	dev_dbg(&adapter->dev, "<%s> send 0x%02x\n", __func__, data);
+
+	fsl_i2c_write_reg(data, i2c_fsl, FSL_I2C_I2DR);
+
+	result = i2c_fsl_trx_complete(adapter);
+	if (result)
+		return result;
+
+	return i2c_fsl_acked(adapter);
+}
+
+static int i2c_fsl_write(struct i2c_adapter *adapter, struct i2c_msg *msg)
+{
 	int i, result;
 
-	if ( !(msgs->flags & I2C_M_DATA_ONLY) ) {
-		dev_dbg(&adapter->dev,
-			"<%s> write slave address: addr=0x%02x\n",
-			__func__, msgs->addr << 1);
-
-		/* write slave address */
-		fsl_i2c_write_reg(msgs->addr << 1, i2c_fsl, FSL_I2C_I2DR);
-
-		result = i2c_fsl_trx_complete(adapter);
-		if (result)
-			return result;
-		result = i2c_fsl_acked(adapter);
+	if (!(msg->flags & I2C_M_DATA_ONLY)) {
+		result = i2c_fsl_send(adapter, msg->addr << 1);
 		if (result)
 			return result;
 	}
 
 	/* write data */
-	for (i = 0; i < msgs->len; i++) {
-		dev_dbg(&adapter->dev,
-			"<%s> write byte: B%d=0x%02X\n",
-			__func__, i, msgs->buf[i]);
-		fsl_i2c_write_reg(msgs->buf[i], i2c_fsl, FSL_I2C_I2DR);
-
-		result = i2c_fsl_trx_complete(adapter);
-		if (result)
-			return result;
-		result = i2c_fsl_acked(adapter);
+	for (i = 0; i < msg->len; i++) {
+		result = i2c_fsl_send(adapter, msg->buf[i]);
 		if (result)
 			return result;
 	}
+
 	return 0;
 }
 
-static int i2c_fsl_read(struct i2c_adapter *adapter, struct i2c_msg *msgs)
+static int i2c_fsl_read(struct i2c_adapter *adapter, struct i2c_msg *msg)
 {
 	struct fsl_i2c_struct *i2c_fsl = to_fsl_i2c_struct(adapter);
 	int i, result;
@@ -510,18 +501,8 @@ static int i2c_fsl_read(struct i2c_adapter *adapter, struct i2c_msg *msgs)
 	fsl_i2c_write_reg(i2c_fsl->hwdata->i2sr_clr_opcode,
 			  i2c_fsl, FSL_I2C_I2SR);
 
-	if ( !(msgs->flags & I2C_M_DATA_ONLY) ) {
-		dev_dbg(&adapter->dev,
-			"<%s> write slave address: addr=0x%02x\n",
-			__func__, (msgs->addr << 1) | 0x01);
-
-		/* write slave address */
-		fsl_i2c_write_reg((msgs->addr << 1) | 0x01, i2c_fsl, FSL_I2C_I2DR);
-
-		result = i2c_fsl_trx_complete(adapter);
-		if (result)
-			return result;
-		result = i2c_fsl_acked(adapter);
+	if (!(msg->flags & I2C_M_DATA_ONLY)) {
+		result = i2c_fsl_send(adapter, (msg->addr << 1) | 1);
 		if (result)
 			return result;
 	}
@@ -529,43 +510,29 @@ static int i2c_fsl_read(struct i2c_adapter *adapter, struct i2c_msg *msgs)
 	/* setup bus to read data */
 	temp = fsl_i2c_read_reg(i2c_fsl, FSL_I2C_I2CR);
 	temp &= ~I2CR_MTX;
-	if (msgs->len - 1)
+	if (msg->len - 1)
 		temp &= ~I2CR_TXAK;
 	fsl_i2c_write_reg(temp, i2c_fsl, FSL_I2C_I2CR);
 
 	fsl_i2c_read_reg(i2c_fsl, FSL_I2C_I2DR); /* dummy read */
 
 	/* read data */
-	for (i = 0; i < msgs->len; i++) {
+	for (i = 0; i < msg->len; i++) {
 		result = i2c_fsl_trx_complete(adapter);
 		if (result)
 			return result;
 
-		if (i == (msgs->len - 1)) {
-			/*
-			 * It must generate STOP before read I2DR to prevent
-			 * controller from generating another clock cycle
-			 */
-			temp = fsl_i2c_read_reg(i2c_fsl, FSL_I2C_I2CR);
-			temp &= ~(I2CR_MSTA | I2CR_MTX);
-			fsl_i2c_write_reg(temp, i2c_fsl, FSL_I2C_I2CR);
-
-			/*
-			 * adding this delay helps on low bitrates
-			 */
-			udelay(i2c_fsl->disable_delay);
-
-			i2c_fsl_bus_busy(adapter, 0);
-			i2c_fsl->stopped = 1;
-		} else if (i == (msgs->len - 2)) {
+		if (i == (msg->len - 1)) {
+			i2c_fsl_stop(adapter);
+		} else if (i == (msg->len - 2)) {
 			temp = fsl_i2c_read_reg(i2c_fsl, FSL_I2C_I2CR);
 			temp |= I2CR_TXAK;
 			fsl_i2c_write_reg(temp, i2c_fsl, FSL_I2C_I2CR);
 		}
-		msgs->buf[i] = fsl_i2c_read_reg(i2c_fsl, FSL_I2C_I2DR);
+		msg->buf[i] = fsl_i2c_read_reg(i2c_fsl, FSL_I2C_I2DR);
 
 		dev_dbg(&adapter->dev, "<%s> read byte: B%d=0x%02X\n",
-			__func__, i, msgs->buf[i]);
+			__func__, i, msg->buf[i]);
 	}
 	return 0;
 }
@@ -612,6 +579,10 @@ static int i2c_fsl_xfer(struct i2c_adapter *adapter,
 fail0:
 	/* Stop I2C transfer */
 	i2c_fsl_stop(adapter);
+
+	/* Disable I2C controller, and force our state to stopped */
+	temp = i2c_fsl->hwdata->i2cr_ien_opcode ^ I2CR_IEN,
+	fsl_i2c_write_reg(temp, i2c_fsl, FSL_I2C_I2CR);
 
 	return (result < 0) ? result : num;
 }
