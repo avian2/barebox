@@ -1159,6 +1159,29 @@ config DEBUG_SOCFPGA_UART1
 	  Say Y here if you want kernel low-level debugging support
 	  on SOCFPGA(Arria 10) based platforms.
 
+config DEBUG_RPI1_UART
+	bool "RaspberryPi 1 low-level debug UART"
+	depends on ARCH_BCM283X
+	help
+	  Say Y here if you want low-level debugging support on
+	  RaspberryPi 1 boards.
+
+	  Selecting this also limits available choices in "boards to
+	  be built" under "system type". If you want to build images
+	  that work on both RaspberryPi 1 and 2/3, you need to deselect
+	  low-level debug.
+
+config DEBUG_RPI2_UART
+	bool "RaspberryPi 2/3 low-level debug UART"
+	depends on ARCH_BCM283X
+	help
+	  Say Y here if you want low-level debugging support on
+	  RaspberryPi 2 and 3 boards.
+
+	  Selecting this also limits available choices in "boards to
+	  be built" under "system type". If you want to build images
+	  that work on both RaspberryPi 1 and 2/3, you need to deselect
+	  low-level debug.
 
 endchoice
 
@@ -1208,6 +1231,12 @@ config DEBUG_SOCFPGA_UART_PHYS_ADDR
 	default 0xffc02000 if DEBUG_SOCFPGA_UART0
 	default 0xffc02100 if DEBUG_SOCFPGA_UART1
 	depends on ARCH_SOCFPGA
+
+config DEBUG_RPI_UART_BASE
+	hex
+	default 0x20201000 if DEBUG_RPI1_UART
+	default 0x3f201000 if DEBUG_RPI2_UART
+	depends on ARCH_BCM283X
 
 config DEBUG_SOCFPGA_UART_CLOCK
 	int "SoCFPGA UART debug clock" if DEBUG_LL

@@ -13,44 +13,28 @@ config MACH_RPI
 	bool "RaspberryPi (BCM2835/ARM1176JZF-S)"
 	select CPU_V6
 	select MACH_RPI_COMMON
+	depends on (!DEBUG_LL) || DEBUG_RPI1_UART
 
 config MACH_RPI2
 	bool "RaspberryPi 2 (BCM2836/CORTEX-A7)"
 	select CPU_V7
 	select MACH_RPI_COMMON
+	depends on (!DEBUG_LL) || DEBUG_RPI2_UART
 
 config MACH_RPI3
 	bool "RaspberryPi 3 (BCM2837/CORTEX-A53)"
 	select CPU_V7
 	select MACH_RPI_COMMON
 	select ARM_SECURE_MONITOR
+	depends on (!DEBUG_LL) || DEBUG_RPI2_UART
 
 config MACH_RPI_CM3
 	bool "RaspberryPi Compute Module 3 (BCM2837/CORTEX-A53)"
 	select CPU_V7
 	select MACH_RPI_COMMON
 	select ARM_SECURE_MONITOR
+	depends on (!DEBUG_LL) || DEBUG_RPI2_UART
 
 endmenu
-
-config MACH_RPI_DEBUG_UART_BASE
-	hex
-	default 0x20201000 if MACH_RPI_DEBUG_UART_RPI
-	default 0x3f201000 if MACH_RPI_DEBUG_UART_RPI2
-
-if DEBUG_LL
-
-choice
-	prompt "Lowlevel debug UART"
-
-config MACH_RPI_DEBUG_UART_RPI
-	bool "use RaspberryPi 1 compatible base"
-
-config MACH_RPI_DEBUG_UART_RPI2
-	bool "use RaspberryPi 2 and 3 compatible base"
-
-endchoice
-
-endif
 
 endif
